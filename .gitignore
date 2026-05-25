@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 .DS_Store
 artifacts/*.tmp
+WebApp日後維護實務建議.txt
