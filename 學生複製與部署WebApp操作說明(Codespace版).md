@@ -177,8 +177,15 @@ python -m pip install -r requirements.txt
 在 Codespace terminal 執行：
 
 ```bash
+export SOLARA_APP=app.py
+export SOLARA_PRODUCTION=true
 export APP_MAP_MAX_POINTS=15000
-solara run app.py --host=0.0.0.0 --port=8765
+
+python -m uvicorn solara.server.starlette:app \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --proxy-headers \
+  --forwarded-allow-ips="*"
 ```
 
 注意：
@@ -266,13 +273,17 @@ hf auth whoami
 建立 Docker Space：
 
 ```bash
-hf repos create spaces/<HF_USER>/<SPACE_NAME> --repo-type=space --space-sdk=docker --exist-ok
+export HF_SPACE_ID="<HF_USER>/<SPACE_NAME>"
+
+hf repos create "$HF_SPACE_ID" --repo-type=space --space-sdk=docker --exist-ok
 ```
 
 範例：
 
 ```bash
-hf repos create spaces/student123/taichung-rental-lightgbm --repo-type=space --space-sdk=docker --exist-ok
+export HF_SPACE_ID="student123/taichung-rental-lightgbm"
+
+hf repos create "$HF_SPACE_ID" --repo-type=space --space-sdk=docker --exist-ok
 ```
 
 
@@ -309,7 +320,7 @@ hf auth login --add-to-git-credential
 export HF_SPACE_ID="<HF_USER>/<SPACE_NAME>"
 ```
 
-範例：
+範例：(雙引號內只能是小寫)
 
 ```bash
 export HF_SPACE_ID="student123/taichung-rental-lightgbm"
@@ -387,6 +398,8 @@ git push origin main
 
 
 ### 2. 更新自己的 HuggingFace Space
+
+確認已安裝與登入 HuggingFace CLI，並已設定 Space ID之後：
 
 ```bash
 hf upload "$HF_SPACE_ID" . . \
@@ -687,7 +700,7 @@ python -m pip install --upgrade huggingface_hub
 hf auth login --add-to-git-credential
 hf auth whoami
 export HF_SPACE_ID="<HF_USER>/<SPACE_NAME>"
-hf repos create "spaces/$HF_SPACE_ID" --repo-type=space --space-sdk=docker --exist-ok
+hf repos create "$HF_SPACE_ID" --repo-type=space --space-sdk=docker --exist-ok
 hf upload "$HF_SPACE_ID" . . \
   --repo-type=space \
   --commit-message "Deploy rental prediction WebApp" \
@@ -884,4 +897,3 @@ bash scripts/deploy_to_hf.sh
 - HuggingFace Docker Spaces documentation：`https://huggingface.co/docs/hub/spaces-sdks-docker`
 - HuggingFace CLI documentation：`https://huggingface.co/docs/huggingface_hub/en/guides/cli`
 - Git LFS documentation：`https://github.com/git-lfs/git-lfs`
-
