@@ -8,6 +8,7 @@ import solara.lab
 
 from .config import FEATURE_DESCRIPTIONS, USER_BINARY, USER_CONTINUOUS
 from .map_view import MAP_CENTER, create_leafmap_widget
+# 備註：暫時保留 predict_rent_per_ping 這個函數名稱避免報錯，我們之後會在 model.py 裡把它正名
 from .model import feature_description_table, load_or_train_bundle, predict_rent_per_ping
 from .spatial import compute_location_features, load_or_build_spatial_cache
 
@@ -15,22 +16,21 @@ target_lat = solara.reactive(float(MAP_CENTER[0]))
 target_lon = solara.reactive(float(MAP_CENTER[1]))
 selected_tab = solara.reactive(0)
 
+# === 🌟 換上你的專屬類別變數標籤 ===
 BINARY_LABELS = {
-    "pet_friendly": "可養寵物",
-    "limited": "租屋限制",
-    "parking": "停車位",
-    "apartment": "公寓",
-    "elevator_building": "電梯大樓",
-    "air_conditioner": "冷氣",
-    "laundry": "洗衣設備",
+    "is_top_floor": "是否為頂樓",
+    "b_type_透天厝": "建物型態：透天厝",
+    "b_type_公寓(5樓含以下無電梯)": "建物型態：老式公寓",
+    "transaction sign_房地(土地+建物)+車位": "是否含車位"
 }
 
+# === 🌟 換上你的專屬連續變數標籤 ===
 CONT_LABELS = {
-    "area_pings": "坪數",
-    "deposit_months": "押金月數",
-    "mgmt_fee": "管理費",
-    "water_fee": "水費",
-    "sum_equip_idx": "設備指標總和",
+    "house_age": "屋齡 (年)",
+    "floor_ratio": "所在樓層比例 (0~1)",
+    "ln_B_area": "建物面積 (對數值)",
+    "park_count_800m": "周邊 800m 公園數量",
+    "px_count_800m": "周邊 800m 全聯數量"
 }
 
 APP_CSS = """
@@ -39,8 +39,8 @@ APP_CSS = """
   --ds-ink-soft: #385169;
   --ds-green: #0f766e;
   --ds-green-dark: #14532d;
-  --ds-rent: #b91c1c;
-  --ds-rent-soft: #fee2e2;
+  --ds-price: #b91c1c;
+  --ds-price-soft: #fee2e2;
   --ds-paper: #f7faf8;
   --ds-line: #dbe4df;
   --ds-line-strong: #b7c8c0;
@@ -125,7 +125,7 @@ APP_CSS = """
   font-weight: 850;
 }
 .metric-tile:first-child .metric-value {
-  color: var(--ds-rent);
+  color: var(--ds-price);
 }
 .app-table-wrap {
   overflow: auto;
@@ -177,7 +177,7 @@ APP_CSS = """
   z-index: 500;
   max-width: min(420px, calc(100% - 76px));
   border: 1px solid rgba(183, 200, 192, 0.9);
-  border-left: 5px solid var(--ds-rent);
+  border-left: 5px solid var(--ds-price);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 10px 24px rgba(22, 50, 79, 0.12);
@@ -239,14 +239,14 @@ APP_CSS = """
 }
 .result-card {
   border: 1px solid #fecaca;
-  border-left: 5px solid var(--ds-rent);
+  border-left: 5px solid var(--ds-price);
   border-radius: 8px;
   background: #fff7f7;
   padding: 12px 14px;
   margin-top: 14px;
 }
 .result-value {
-  color: var(--ds-rent);
+  color: var(--ds-price);
   font-size: 26px;
   font-weight: 850;
   line-height: 1.15;
@@ -278,19 +278,15 @@ APP_CSS = """
 }
 """
 
-
 def _yes_no(value: str) -> float:
     return 1.0 if value == "是" else 0.0
-
 
 def _display_table(df: pd.DataFrame, max_rows: int | None = None):
     table = df if max_rows is None else df.head(max_rows)
     solara.display(table.reset_index(drop=True))
 
-
 def _table_html(df: pd.DataFrame) -> str:
     return df.reset_index(drop=True).to_html(index=False, border=0, classes="app-table", escape=True)
-
 
 def _panel_html(title: str, body: str, kicker: str = "", subtitle: str = "") -> str:
     kicker_html = f"<div class='panel-kicker'>{html.escape(kicker)}</div>" if kicker else ""
@@ -301,18 +297,16 @@ def _panel_html(title: str, body: str, kicker: str = "", subtitle: str = "") -> 
         f"{subtitle_html}{body}</div></section>"
     )
 
-
 def _table_panel_html(title: str, df: pd.DataFrame, height: str, kicker: str = "", subtitle: str = "") -> str:
     table = _table_html(df)
     body = f"<div class='app-table-wrap' style='height:{height}'>{table}</div>"
     return _panel_html(title, body, kicker=kicker, subtitle=subtitle)
 
-
 def _metrics_panel_html(metrics: dict, trained_rows: int, created_at: str) -> str:
     labels = [("R2", "R2"), ("RMSE", "RMSE"), ("MAE", "MAE"), ("MAPE_pct", "MAPE %")]
     tiles = "".join(
         f"<div class='metric-tile'><div class='metric-label'>{html.escape(label)}</div>"
-        f"<div class='metric-value'>{html.escape(str(metrics[key]))}</div></div>"
+        f"<div class='metric-value'>{html.escape(str(metrics.get(key, '-')))}</div></div>"
         for key, label in labels
     )
     body = (
@@ -321,43 +315,43 @@ def _metrics_panel_html(metrics: dict, trained_rows: int, created_at: str) -> st
     )
     return _panel_html("模型表現指標", body, kicker="MODEL PERFORMANCE")
 
-
 def _home_html(bundle: dict) -> str:
     feature_df = feature_description_table()
-    fi = bundle["feature_importance"].copy()
-    fi["說明"] = fi["Feature"].map(FEATURE_DESCRIPTIONS)
-    shap_df = bundle["shap_importance"].copy()
-    shap_df["說明"] = shap_df["Feature"].map(FEATURE_DESCRIPTIONS)
+    fi = bundle.get("feature_importance", pd.DataFrame({"Feature": [], "Importance": []})).copy()
+    if not fi.empty:
+        fi["說明"] = fi["Feature"].map(FEATURE_DESCRIPTIONS).fillna("-")
+    
+    shap_df = bundle.get("shap_importance", pd.DataFrame({"Feature": [], "Mean_Abs_SHAP": []})).copy()
+    if not shap_df.empty:
+        shap_df["說明"] = shap_df["Feature"].map(FEATURE_DESCRIPTIONS).fillna("-")
+    
     intro = (
         "<section class='app-panel'><div class='panel-body'>"
-        "<div class='panel-kicker'>TAICHUNG RENTAL PREDICTION</div>"
-        "<h1 class='panel-title'>臺中市租屋每坪租金預測 WebApp</h1>"
-        "<p class='panel-copy'>本系統使用 <code>Taichung_rental_houses_v4.gpkg</code> 的租屋點位與屬性資料，"
-        "依據課堂 notebook 的 F3_SPATIAL 特徵集訓練 LightGBM 模型。預測目標為 <code>ln_rent</code>，"
-        "介面會將模型輸出還原為每坪租金。墨綠色代表研究儀表板基調，租金紅用於標示模型與租金重點。</p>"
+        "<div class='panel-kicker'>TAICHUNG HOUSE PRICE PREDICTION</div>"
+        "<h1 class='panel-title'>臺中市房價與社宅外部效應預測 WebApp</h1>"
+        "<p class='panel-copy'>本系統整合實價登錄大數據與地理資訊，並結合 LightGBM 機器學習演算法與空間特徵工程。預測目標為 <code>ln_u_price</code>（單價對數），"
+        "系統會自動將輸出結果還原為每坪單價（萬/坪）。您可以透過地圖點擊，即時評估社會住宅、交通節點與嫌惡設施等外部效應對房價的影響。</p>"
         "</div></section>"
     )
     return (
         "<div class='codex-app-page'>"
         "<div class='home-grid'>"
         f"{intro}"
-        f"{_metrics_panel_html(bundle['metrics'], int(bundle.get('trained_rows', 0)), str(bundle.get('created_at', '尚未記錄')))}"
+        f"{_metrics_panel_html(bundle.get('metrics', {}), int(bundle.get('trained_rows', 0)), str(bundle.get('created_at', '尚未記錄')))}"
         "</div>"
         "<div class='home-grid' style='margin-top:18px'>"
-        f"{_table_panel_html('特徵變數說明', feature_df, '560px', kicker='FEATURE DICTIONARY', subtitle='模型使用的 29 個 F3_SPATIAL 特徵。')}"
+        f"{_table_panel_html('特徵變數說明', feature_df, '560px', kicker='FEATURE DICTIONARY', subtitle='模型使用的核心特徵與空間變數。')}"
         "<div class='home-stack'>"
         f"{_table_panel_html('LightGBM 特徵重要性', fi, '264px', kicker='FEATURE IMPORTANCE', subtitle='依 LightGBM split/gain 重要性排序。')}"
-        f"{_table_panel_html('SHAP 平均絕對貢獻度', shap_df, '264px', kicker='MODEL INTERPRETATION', subtitle='以測試樣本計算各特徵對 ln_rent 的平均絕對貢獻。')}"
+        f"{_table_panel_html('SHAP 平均絕對貢獻度', shap_df, '264px', kicker='MODEL INTERPRETATION', subtitle='計算各特徵對 ln_u_price 的平均絕對影響力。')}"
         "</div>"
         "</div>"
         "</div>"
     )
 
-
 @solara.component
 def HomePage(bundle: dict):
     solara.HTML(tag="div", unsafe_innerHTML=_home_html(bundle))
-
 
 @solara.component
 def MapPanel():
@@ -368,19 +362,24 @@ def MapPanel():
             tag="div",
             unsafe_innerHTML=(
                 "<div class='map-badge'><div class='panel-kicker'>INTERACTIVE MAP</div>"
-                "<div class='map-badge-title'>租屋點位與目標位置</div>"
+                "<div class='map-badge-title'>實價登錄點位與目標位置</div>"
                 f"<span class='map-badge-copy'>目前目標座標：{target_lon.value:.6f}, {target_lat.value:.6f}</span></div>"
             ),
         )
 
-
 @solara.component
 def ControlPanel(bundle: dict, spatial_cache: dict):
-    stats = bundle["feature_stats"]
-    continuous_state = {
-        key: solara.use_reactive(float(stats[key]["median"])) for key in USER_CONTINUOUS
-    }
-    binary_state = {key: solara.use_reactive("否") for key in USER_BINARY}
+    stats = bundle.get("feature_stats", {})
+    
+    continuous_state = {}
+    for key in USER_CONTINUOUS:
+        default_val = float(stats.get(key, {}).get("median", 0))
+        continuous_state[key] = solara.use_reactive(default_val)  # noqa: SH103
+        
+    binary_state = {}
+    for key in USER_BINARY:
+        binary_state[key] = solara.use_reactive("否")  # noqa: SH103
+        
     prediction = solara.use_reactive(None)
     error = solara.use_reactive("")
 
@@ -389,38 +388,41 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
             tag="div",
             unsafe_innerHTML=(
                 "<div class='control-hero'><div class='panel-kicker'>MAP PREDICTION</div>"
-                "<h2 class='control-hero-title'>設定目標房屋並估算租金</h2>"
-                "<p class='panel-copy'>在左側地圖點選目標位置，或拖曳標記調整座標；點選既有租屋點會顯示該物件屬性並同步設為目標座標。填寫屬性後即可計算預測租金。</p>"
+                "<h2 class='control-hero-title'>設定目標房屋並估算單價</h2>"
+                "<p class='panel-copy'>在左側地圖點選目標位置，系統將即時計算該座標周邊的社宅、綠地與軌道等空間特徵。填寫右側數值屬性後，即可進行房價估算。</p>"
                 f"<span class='coordinate-pill' style='margin-top:10px'>目標座標：{target_lon.value:.6f}, {target_lat.value:.6f}</span></div>"
             ),
         )
 
-        with solara.Column(classes=["control-section"]):
-            solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋物件數值屬性</div>")
-            for key, state in continuous_state.items():
-                item = stats[key]
-                solara.SliderFloat(
-                    CONT_LABELS[key],
-                    value=state,
-                    min=float(item["min"]),
-                    max=float(item["max"]),
-                    step=float(item["step"]),
-                )
+        if continuous_state:
+            with solara.Column(classes=["control-section"]):
+                solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋物件數值屬性</div>")
+                for key, state in continuous_state.items():
+                    item = stats[key]
+                    solara.SliderFloat(
+                        CONT_LABELS.get(key, key), 
+                        value=state,
+                        min=float(item["min"]),
+                        max=float(item["max"]),
+                        step=float(item.get("step", 1.0)),
+                    )
 
-        with solara.Column(classes=["control-section"]):
-            solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋物件類別屬性</div>")
-            binary_items = list(binary_state.items())
-            for i in range(0, len(binary_items), 2):
-                with solara.Row(gap="12px", style={"width": "100%", "align-items": "end"}):
-                    for key, state in binary_items[i : i + 2]:
-                        with solara.Column(style={"flex": "1 1 0", "min-width": "0"}):
-                            solara.Select(BINARY_LABELS[key], values=["否", "是"], value=state)
+        if binary_state:
+            with solara.Column(classes=["control-section"]):
+                solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋物件類別屬性</div>")
+                binary_items = list(binary_state.items())
+                for i in range(0, len(binary_items), 2):
+                    with solara.Row(gap="12px", style={"width": "100%", "align-items": "end"}):
+                        for key, state in binary_items[i : i + 2]:
+                            with solara.Column(style={"flex": "1 1 0", "min-width": "0"}):
+                                solara.Select(BINARY_LABELS.get(key, key), values=["否", "是"], value=state)
 
         def run_prediction():
             try:
                 location = compute_location_features(target_lon.value, target_lat.value, spatial_cache)
                 user_inputs = {key: float(state.value) for key, state in continuous_state.items()}
                 user_inputs.update({key: _yes_no(state.value) for key, state in binary_state.items()})
+                
                 result = predict_rent_per_ping(
                     bundle,
                     user_inputs,
@@ -432,9 +434,9 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
                 error.value = ""
             except Exception as exc:
                 prediction.value = None
-                error.value = str(exc)
+                error.value = f"運算錯誤: {str(exc)}"
 
-        solara.Button("計算預測租金", on_click=run_prediction, color="primary", outlined=False)
+        solara.Button("計算預測單價", on_click=run_prediction, color="primary", outlined=False)
 
         if error.value:
             solara.Error(error.value)
@@ -442,55 +444,42 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
         if prediction.value:
             pred = prediction.value["prediction"]
             loc = prediction.value["location"]
+            
+            val_display = pred.get("price_per_ping", pred.get("rent_per_ping", 0))
+            ln_display = pred.get("ln_u_price", pred.get("ln_rent", 0))
+            
             solara.HTML(
                 tag="div",
                 unsafe_innerHTML=(
-                    "<div class='result-card'><div class='panel-kicker'>PREDICTED RENT</div>"
-                    f"<div class='result-value'>{pred['rent_per_ping']:,.0f} 元 / 坪</div>"
-                    f"<p class='panel-subtitle'>模型輸出 ln_rent = {pred['ln_rent']:.4f}</p></div>"
+                    "<div class='result-card'><div class='panel-kicker'>PREDICTED PRICE</div>"
+                    f"<div class='result-value'>{val_display:,.1f} 萬 / 坪</div>"
+                    f"<p class='panel-subtitle'>模型輸出 ln_u_price = {ln_display:.4f}</p></div>"
                 ),
             )
             loc_df = pd.DataFrame([loc["details"]]).T.reset_index()
             loc_df.columns = ["區位計算項目", "值"]
             _display_table(loc_df)
 
-
 @solara.component
 def PredictionPage(bundle: dict, spatial_cache: dict):
-    with solara.Row(
-        gap="18px",
-        classes=["codex-app-page", "map-page"],
-        style={
-            "align-items": "stretch",
-            "width": "100%",
-            "min-height": "calc(100vh - 96px)",
-            "overflow": "hidden",
-        },
-    ):
-        with solara.Column(classes=["map-column"], style={"flex": "1 1 auto", "min-width": "640px"}):
+    with solara.Row(classes=["map-page"], style={"align-items": "stretch", "flex-wrap": "wrap"}):
+        with solara.Column(classes=["map-column"], style={"flex": "1 1 55%", "min-width": "0"}):
             MapPanel()
-        with solara.Column(
-            classes=["control-column"],
-            style={
-                "flex": "0 0 560px",
-                "min-width": "500px",
-                "max-width": "620px",
-                "max-height": "calc(100vh - 96px)",
-                "overflow-y": "auto",
-            },
-        ):
+        with solara.Column(classes=["control-column"], style={"flex": "1 1 45%", "min-width": "0"}):
             ControlPanel(bundle, spatial_cache)
-
 
 @solara.component
 def Page():
-    solara.Title("臺中市租金預測 LightGBM WebApp")
+    solara.Title("臺中市房價與社宅外部效應預測 WebApp")
     solara.HTML(tag="style", unsafe_innerHTML=APP_CSS)
+    
     bundle = solara.use_memo(load_or_train_bundle, [])
     spatial_cache = solara.use_memo(load_or_build_spatial_cache, [])
+        
     with solara.lab.Tabs(value=selected_tab, grow=True, color="#0f766e", slider_color="#b91c1c"):
         solara.lab.Tab("首頁")
         solara.lab.Tab("地圖預測")
+        
     if selected_tab.value == 0:
         HomePage(bundle)
     else:

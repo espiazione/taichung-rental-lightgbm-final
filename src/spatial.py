@@ -26,13 +26,11 @@ from .config import (
 
 _TRANSFORMER_TO_MODEL = Transformer.from_crs(EPSG_WEB, EPSG_MODEL, always_xy=True)
 
-
 def _require_layer(key: str):
     path, layer = POI_LAYERS[key]
     if not path.exists():
         raise FileNotFoundError(f"缺少必要 POI 圖資：{path.name}。請放入 POIs 資料夾後再啟動 app。")
     return path, layer
-
 
 def _read_layer(key: str) -> gpd.GeoDataFrame:
     path, layer = _require_layer(key)
@@ -45,10 +43,8 @@ def _read_layer(key: str) -> gpd.GeoDataFrame:
     gdf.geometry = gdf.geometry.map(lambda geom: transform(lambda x, y, z=None: (x, y), geom))
     return gdf
 
-
 def _node_key(x: float, y: float) -> tuple[float, float]:
     return (round(float(x), 3), round(float(y), 3))
-
 
 def _build_road_graph() -> tuple[nx.Graph, np.ndarray]:
     roads = _read_layer("roads").explode(index_parts=False).copy()
@@ -78,16 +74,17 @@ def _build_road_graph() -> tuple[nx.Graph, np.ndarray]:
         coords_array[node_id] = coord
     return graph, coords_array
 
-
 def _snap_points_to_nodes(gdf: gpd.GeoDataFrame, node_tree: cKDTree) -> list[int]:
-    coords = np.column_stack([gdf.geometry.x.to_numpy(), gdf.geometry.y.to_numpy()])
+    # 🌟 救援行動：強制將所有形狀轉為「中心點 (Centroid)」，避免 Polygon 或 LineString 報錯
+    centroids = gdf.geometry.centroid
+    coords = np.column_stack([centroids.x.to_numpy(), centroids.y.to_numpy()])
     _, idx = node_tree.query(coords)
     return [int(i) for i in np.atleast_1d(idx)]
 
-
 def _point_coords(gdf: gpd.GeoDataFrame) -> np.ndarray:
-    return np.column_stack([gdf.geometry.x.to_numpy(), gdf.geometry.y.to_numpy()]).astype(float)
-
+    # 🌟 救援行動：強制將所有形狀轉為「中心點 (Centroid)」
+    centroids = gdf.geometry.centroid
+    return np.column_stack([centroids.x.to_numpy(), centroids.y.to_numpy()]).astype(float)
 
 def build_and_save_spatial_cache(path=SPATIAL_CACHE_PATH) -> dict[str, Any]:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -102,29 +99,25 @@ def build_and_save_spatial_cache(path=SPATIAL_CACHE_PATH) -> dict[str, Any]:
             raise ValueError(f"{key} 圖層沒有可用點位，無法計算道路距離。")
         dist_maps[key] = nx.multi_source_dijkstra_path_length(graph, source_nodes, weight="weight")
 
+    # 針對你的專屬模型：快取全聯、公園的座標 (用來算數量)，以及社宅 (用來判定距離)
     cache = {
         "graph": graph,
         "node_coords": node_coords,
         "dist_maps": dist_maps,
-        "temple_coords": _point_coords(_read_layer("temple")),
-        "stores_coords": _point_coords(_read_layer("stores")),
-        "busstops_coords": _point_coords(_read_layer("busstops")),
-        "medical_coords": _point_coords(_read_layer("medical")),
+        "pxmart_coords": _point_coords(_read_layer("pxmart")),
+        "park_coords": _point_coords(_read_layer("park")),
+        "socialhouse_gdf": _read_layer("socialhouse"), # 直接存整個 GeoDataFrame 方便字串比對
         "towns": _read_layer("towns"),
     }
     joblib.dump(cache, path)
     return _hydrate_cache(cache)
 
-
 def _hydrate_cache(cache: dict[str, Any]) -> dict[str, Any]:
     cache = dict(cache)
     cache["node_tree"] = cKDTree(cache["node_coords"])
-    cache["temple_tree"] = cKDTree(cache["temple_coords"])
-    cache["stores_tree"] = cKDTree(cache["stores_coords"])
-    cache["busstops_tree"] = cKDTree(cache["busstops_coords"])
-    cache["medical_tree"] = cKDTree(cache["medical_coords"])
+    cache["pxmart_tree"] = cKDTree(cache["pxmart_coords"])
+    cache["park_tree"] = cKDTree(cache["park_coords"])
     return cache
-
 
 @lru_cache(maxsize=1)
 def load_or_build_spatial_cache() -> dict[str, Any]:
@@ -132,22 +125,8 @@ def load_or_build_spatial_cache() -> dict[str, Any]:
         return _hydrate_cache(joblib.load(SPATIAL_CACHE_PATH))
     return build_and_save_spatial_cache(SPATIAL_CACHE_PATH)
 
-
-def _count_within(tree: cKDTree, x: float, y: float, radius: float = 500.0) -> int:
+def _count_within(tree: cKDTree, x: float, y: float, radius: float = 800.0) -> int:
     return int(len(tree.query_ball_point([x, y], r=radius)))
-
-
-def _core_zone(cache: dict[str, Any], point: Point) -> int:
-    towns: gpd.GeoDataFrame = cache["towns"]
-    matches = towns[towns.geometry.contains(point)]
-    if matches.empty:
-        return 0
-    row = matches.iloc[0]
-    if "core_zone" in row and pd.notna(row["core_zone"]):
-        return int(row["core_zone"])
-    town_name = str(row.get("TOWNNAME", "")).replace("臺中市", "")
-    return int(town_name in CORE_TOWNS)
-
 
 def compute_location_features(lon: float, lat: float, cache: dict[str, Any] | None = None) -> dict[str, Any]:
     cache = cache or load_or_build_spatial_cache()
@@ -158,32 +137,45 @@ def compute_location_features(lon: float, lat: float, cache: dict[str, Any] | No
 
     features: dict[str, float] = {}
     details: dict[str, float | int] = {"x3826": float(x), "y3826": float(y)}
+    
+    # 1. 道路距離計算 (路徑規劃)
     for key, feature_name in ROAD_DISTANCE_FEATURES.items():
         dist = cache["dist_maps"][key].get(node)
         if dist is None:
-            raise ValueError(f"目標點所在路網無法連通到 {key} 圖層，請改點鄰近道路位置。")
+            dist = 15000.0 # 找不到路徑時給一個預設極大值
         dist = max(float(dist), 1.0)
         features[feature_name] = float(np.log(dist))
-        details[f"dist_road_{key}_m"] = round(dist, 2)
+        details[f"dist_{key}_m"] = round(dist, 2)
 
-    temple_dist = max(float(cache["temple_tree"].query([[x, y]])[0][0]), 1.0)
-    stores_count = _count_within(cache["stores_tree"], x, y)
-    bus_count = _count_within(cache["busstops_tree"], x, y)
-    medical_count = _count_within(cache["medical_tree"], x, y)
+    # 2. 800公尺內設施數量計算
+    px_count = _count_within(cache["pxmart_tree"], x, y, radius=800.0)
+    park_count = _count_within(cache["park_tree"], x, y, radius=800.0)
+    features["px_count_800m"] = float(px_count)
+    features["park_count_800m"] = float(park_count)
+    details["px_count_800m"] = px_count
+    details["park_count_800m"] = park_count
 
-    features["ln_dist_eucl_temple"] = float(np.log(temple_dist))
-    features["ln_stores_500m"] = float(np.log1p(stores_count))
-    features["ln_bus_stops_500m"] = float(np.log1p(bus_count))
-    features["ln_medical_service_500m"] = float(np.log1p(medical_count))
-    features["core_zone"] = float(_core_zone(cache, point))
+    # 3. 社會住宅 2000 公尺涵蓋判定 (暴力字串比對法，超強容錯！)
+    sh_dummies = [
+        "in_梧棲區三民社會住宅_net_2000", "in_豐原安康一期_net_2000",
+        "in_太平長億社會住宅_net_2000", "in_大里區光正一期社會住宅_net_2000",
+        "in_烏日區高鐵社會住宅_net_2000", "in_南屯區精密機械科技創新園區社會住宅_net_2000",
+        "in_東區恊園_net_2000"
+    ]
+    for dummy in sh_dummies:
+        features[dummy] = 0.0
 
-    details.update(
-        {
-            "dist_eucl_temple_m": round(temple_dist, 2),
-            "stores_500m": stores_count,
-            "bus_stops_500m": bus_count,
-            "medical_service_500m": medical_count,
-            "core_zone": int(features["core_zone"]),
-        }
-    )
+    sh_gdf = cache["socialhouse_gdf"]
+    for idx, row in sh_gdf.iterrows():
+        dist = point.distance(row.geometry)
+        if dist <= 2000:
+            row_str = str(row.to_dict())
+            if "安康" in row_str: features["in_豐原安康一期_net_2000"] = 1.0
+            elif "長億" in row_str: features["in_太平長億社會住宅_net_2000"] = 1.0
+            elif "光正" in row_str: features["in_大里區光正一期社會住宅_net_2000"] = 1.0
+            elif "三民" in row_str: features["in_梧棲區三民社會住宅_net_2000"] = 1.0
+            elif "高鐵" in row_str: features["in_烏日區高鐵社會住宅_net_2000"] = 1.0
+            elif "精密" in row_str or "精科" in row_str: features["in_南屯區精密機械科技創新園區社會住宅_net_2000"] = 1.0
+            elif "恊園" in row_str or "協園" in row_str: features["in_東區恊園_net_2000"] = 1.0
+
     return {"features": features, "details": details}
