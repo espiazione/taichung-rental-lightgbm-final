@@ -28,11 +28,11 @@ from .config import (
     POI_LAYERS,
 )
 
-# 🌟 終極防呆：確保 'town' 絕對在特徵清單中
+# 🌟 確保 'town' 絕對在特徵清單中
 if 'town' not in FEATURE_COLUMNS:
     FEATURE_COLUMNS.append('town')
 
-# 🌟 全台中市行政區固定整數映射表 (純數值化)
+# 🌟 全台中市行政區固定整數映射表 (純數值化，免疫 category 錯誤)
 TOWN_MAPPING = {
     '西屯區': 0, '北屯區': 1, '南屯區': 2, '東區': 3, '西區': 4, '南區': 5, '北區': 6, '中區': 7,
     '豐原區': 8, '大里區': 9, '太平區': 10, '清水區': 11, '沙鹿區': 12, '大甲區': 13, '梧棲區': 14,
@@ -43,8 +43,7 @@ TOWN_MAPPING = {
 def _convert_chinese_floor(text):
     if pd.isna(text): return np.nan
     text = str(text).replace('層', '').strip()
-    if any(word in text for word in ['見其他', '全', '夾', '屋頂', '避難', '平台', '通道']):
-        return np.nan
+    if any(word in text for word in ['見其他', '全', '夾', '屋頂', '避難', '平台', '通道']): return np.nan
     is_basement = -1 if '地下' in text else 1
     text = text.replace('地下', '')
     cn_num = {'一':1, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9, '十':10}
@@ -57,11 +56,9 @@ def _convert_chinese_floor(text):
             elif text[1] == '十': val = cn_num.get(text[0], 0) * 10
         elif len(text) == 3 and text[1] == '十':
             val = cn_num.get(text[0], 0) * 10 + cn_num.get(text[2], 0)
-        else:
-            return np.nan
+        else: return np.nan
         return val * is_basement
-    except:
-        return np.nan
+    except: return np.nan
 
 @lru_cache(maxsize=1)
 def _get_town_gdf():
@@ -69,8 +66,7 @@ def _get_town_gdf():
     return gpd.read_file(path)
 
 def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[str, float]]]:
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"找不到訓練資料：{DATA_PATH}")
+    if not DATA_PATH.exists(): raise FileNotFoundError(f"找不到訓練資料：{DATA_PATH}")
     
     print("讀取空間資料庫中...")
     gdf = gpd.read_file(DATA_PATH)
@@ -80,7 +76,7 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
     else:
         gdf['transaction_year'] = 2026
 
-    # 🌟 強制將 town 轉為純粹的數字，不帶任何 pandas 類別屬性
+    # 將 town 轉為數字
     if 'town' in gdf.columns:
         gdf['town'] = gdf['town'].map(TOWN_MAPPING).fillna(0).astype(float)
     else:
@@ -125,25 +121,20 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
         if m.startswith('ln_'):
             if m == 'ln_B_area' and 'B_area_m2' in gdf.columns:
                 gdf[m] = np.log(pd.to_numeric(gdf['B_area_m2'], errors='coerce').clip(lower=1e-5))
-                gdf[m] = gdf[m].fillna(0)
             else:
                 base_col = m[3:] 
                 if base_col in gdf.columns:
                     gdf[m] = np.log(pd.to_numeric(gdf[base_col], errors='coerce').clip(lower=1e-5))
-                    gdf[m] = gdf[m].fillna(0)
+            gdf[m] = gdf[m].fillna(0)
 
     print("🧹 過濾極端異常房價...")
-    if 'u_price' in gdf.columns:
-        gdf = gdf[gdf['u_price'] > 1000]
-    if TARGET_COLUMN in gdf.columns:
-        gdf = gdf[gdf[TARGET_COLUMN] > -5] 
+    if 'u_price' in gdf.columns: gdf = gdf[gdf['u_price'] > 1000]
+    if TARGET_COLUMN in gdf.columns: gdf = gdf[gdf[TARGET_COLUMN] > -5] 
 
     missing_final = [c for c in FEATURE_COLUMNS + [TARGET_COLUMN] if c not in gdf.columns]
     for m in missing_final:
-        if m in SPATIAL_VARS or m in USER_BINARY:
-            gdf[m] = 0.0
-        else:
-            raise ValueError(f"缺少必要核心欄位：{m}")
+        if m in SPATIAL_VARS or m in USER_BINARY: gdf[m] = 0.0
+        else: raise ValueError(f"缺少必要核心欄位：{m}")
             
     gdf = gdf.dropna(subset=[TARGET_COLUMN]).copy()
     X = gdf[FEATURE_COLUMNS].copy()
@@ -154,8 +145,7 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
         if col in X.columns:
             series = pd.to_numeric(X[col], errors="coerce").fillna(0)
             q01, q99 = float(series.quantile(0.01)), float(series.quantile(0.99))
-            if np.isclose(q01, q99):
-                q01, q99 = float(series.min()), float(series.max())
+            if np.isclose(q01, q99): q01, q99 = float(series.min()), float(series.max())
             stats[col] = {"min": round(q01, 2), "max": round(q99, 2), "median": round(float(series.median()), 2), "step": 1.0 if series.dtype == int else 0.1}
             
     return X, y, stats
@@ -167,25 +157,49 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
         "MAE": round(float(mean_absolute_error(y_true, y_pred)), 4),
         "MAPE_pct": round(float(np.mean(np.abs((y_true - y_pred) / y_true)) * 100), 2),
     }
+
 def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     X, y, stats = _prepare_training_frame()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=SEED)
     
-    print("🚀 訓練 LightGBM (純數值模式，徹底移除 Category 驗證)...")
+    print("🚀 訓練 LightGBM (純數值模式)...")
     model = lgb.LGBMRegressor(n_estimators=250, learning_rate=0.05, num_leaves=63, subsample=0.8, colsample_bytree=0.8, random_state=SEED, n_jobs=-1, verbose=-1)
-    
-    # 🌟 絕對關鍵：移除 categorical_feature 參數，完全視為數值計算！
     model.fit(X_train, y_train)
-    
     pred = model.predict(X_test)
     metrics = _metrics(y_test, pred)
+    
+    # 🌟 補回缺失的特徵重要性 (Feature Importance)
+    feature_importance = pd.DataFrame({
+        "Feature": FEATURE_COLUMNS, 
+        "Importance": model.feature_importances_
+    }).sort_values("Importance", ascending=False)
+    
+    # 🌟 補回缺失的 SHAP 影響力
+    shap_importance = pd.DataFrame({"Feature": FEATURE_COLUMNS, "Mean_Abs_SHAP": np.nan})
+    try:
+        import shap
+        print("📊 計算 SHAP 影響力中...")
+        sample_n = min(3000, len(X_test))
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_test.iloc[:sample_n], check_additivity=False)
+        shap_importance = pd.DataFrame({
+            "Feature": FEATURE_COLUMNS, 
+            "Mean_Abs_SHAP": np.abs(shap_values).mean(axis=0)
+        }).sort_values("Mean_Abs_SHAP", ascending=False)
+    except Exception as exc:
+        print(f"SHAP 計算跳過: {exc}")
     
     bundle = {
         "model": model,
         "feature_columns": FEATURE_COLUMNS,
         "metrics": metrics,
         "feature_stats": stats,
+        # 🌟 補回 UI 需要的擴充資料
+        "feature_importance": feature_importance.reset_index(drop=True),
+        "shap_importance": shap_importance.reset_index(drop=True),
+        "trained_rows": len(X),
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     joblib.dump(bundle, artifact_path)
     print("✅ 訓練完成並儲存成功！", metrics)
@@ -223,8 +237,6 @@ def predict_rent_per_ping(
         if col not in row_dict: row_dict[col] = 0.0
             
     model_row = pd.DataFrame([row_dict])[FEATURE_COLUMNS]
-    
-    # 🌟 終極脫殼術：轉成純粹的 2D 浮點數陣列，完美繞過 Pandas 所有型態驗證機制
     X_pred = model_row.astype(float).values
     ln_pred = float(bundle["model"].predict(X_pred)[0])
     
