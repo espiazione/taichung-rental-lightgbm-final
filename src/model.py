@@ -10,6 +10,7 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from shapely.geometry import Point
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
@@ -24,6 +25,7 @@ from .config import (
     USER_CONTINUOUS,
     USER_BINARY,
     SPATIAL_VARS,
+    POI_LAYERS,
 )
 
 # ==========================================
@@ -56,6 +58,14 @@ def _convert_chinese_floor(text):
         return np.nan
 
 # ==========================================
+# 🌟 快取行政區圖層
+# ==========================================
+@lru_cache(maxsize=1)
+def _get_town_gdf():
+    path, layer = POI_LAYERS["towns"]
+    return gpd.read_file(path)
+
+# ==========================================
 # 模型資料準備核心
 # ==========================================
 def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[str, float]]]:
@@ -64,6 +74,15 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
     
     print("讀取空間資料庫中...")
     gdf = gpd.read_file(DATA_PATH)
+    
+    # --- 🌟 新增：處理時間與行政區特徵 ---
+    if 'transaction year month and day' in gdf.columns:
+        gdf['transaction_year'] = gdf['transaction year month and day'].astype(str).str[:3].astype(int) + 1911
+    else:
+        gdf['transaction_year'] = 2026
+
+    if 'town' in gdf.columns:
+        gdf['town'] = gdf['town'].astype('category')
     
     # --- 🌟 樓層特徵工程 ---
     if 'floor_ratio' not in gdf.columns:
@@ -85,9 +104,8 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
         else:
             gdf['floor_ratio'] = 0.5
             
-    # --- 🌟 新增：動態展開類別變數 (Auto One-Hot Encoding) ---
+    # --- 🌟 動態展開類別變數 (Auto One-Hot Encoding) ---
     print("🔄 檢查並自動展開類別特徵 (One-Hot Encoding)...")
-    # 處理建物型態 (b_type)
     if 'b_type' in gdf.columns:
         print("  -> 展開 b_type")
         dummies_b = pd.get_dummies(gdf['b_type'], prefix='b_type').astype(float)
@@ -97,7 +115,6 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
         dummies_b = pd.get_dummies(gdf['建物型態'], prefix='b_type').astype(float)
         gdf = pd.concat([gdf, dummies_b], axis=1)
 
-    # 處理交易標的 (transaction sign)
     if 'transaction sign' in gdf.columns:
         print("  -> 展開 transaction sign")
         dummies_t = pd.get_dummies(gdf['transaction sign'], prefix='transaction sign').astype(float)
@@ -107,7 +124,7 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
         dummies_t = pd.get_dummies(gdf['交易標的'], prefix='transaction sign').astype(float)
         gdf = pd.concat([gdf, dummies_t], axis=1)
 
-    # --- 🌟 自動計算對數 (ln_) 修復版 ---
+    # --- 🌟 自動計算對數 (ln_) ---
     missing_initial = [c for c in FEATURE_COLUMNS + [TARGET_COLUMN] if c not in gdf.columns]
     for m in missing_initial:
         if m.startswith('ln_'):
@@ -121,43 +138,31 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
                     print(f"📐 正在自動補算對數特徵: {m} (來自 {base_col})")
                     gdf[m] = np.log(pd.to_numeric(gdf[base_col], errors='coerce').clip(lower=1e-5))
                     gdf[m] = gdf[m].fillna(0)
-# ... (前面是自動計算對數 ln_ 的程式碼) ...
 
     # ==========================================
-    # 🧹 新增：極端異常值清道夫 (拯救 R2 與 MAPE)
+    # 🧹 極端異常值清道夫
     # ==========================================
     print("🧹 執行資料清洗：過濾極端異常房價...")
     before_drop = len(gdf)
     
-    # 1. 殺掉單價小於 1000 元的幽靈交易 (親友贈與/亂填)
     if 'u_price' in gdf.columns:
         gdf = gdf[gdf['u_price'] > 1000]
-    
-    # 2. 殺掉單價大於 300 萬/坪 的極端錯誤值 (台中租金/房價不太可能超出這個範圍)
-    # (如果你的 u_price 單位是"元/平方公尺"或"萬/坪"，請依照你的單位調整數字！這裡假設是元)
-    # 如果 u_price 是萬元/坪，請改成 gdf['u_price'] > 0.1 和 gdf['u_price'] < 300
-    if 'u_price' in gdf.columns:
-        # 假設單位是 "元"，保留單價介於 1萬 ~ 150萬 之間的合理交易
-        # gdf = gdf[(gdf['u_price'] >= 10000) & (gdf['u_price'] <= 1500000)]
-        pass # 請依據你的真實單位取消註解並設定合理範圍
+        pass 
         
-    # 3. 確保對數價格不是極端負數 (剛剛 clip 產生的假資料)
     if TARGET_COLUMN in gdf.columns:
         gdf = gdf[gdf[TARGET_COLUMN] > -5] 
 
     after_drop = len(gdf)
     print(f"   -> 移除了 {before_drop - after_drop} 筆異常幽靈資料！")
-    # ==========================================
 
     # --- 🌟 最終容錯檢查 ---
     missing_final = [c for c in FEATURE_COLUMNS + [TARGET_COLUMN] if c not in gdf.columns]
     for m in missing_final:
         if m in SPATIAL_VARS or m in USER_BINARY:
-            gdf[m] = 0.0 # 靜默補 0，不再印出警告以免干擾
+            gdf[m] = 0.0
         else:
             raise ValueError(f"訓練資料仍缺少必要核心欄位：{m}。請檢查資料庫！")
             
-    # 清理並準備輸出
     gdf = gdf.dropna(subset=[TARGET_COLUMN]).copy()
     X = gdf[FEATURE_COLUMNS].copy()
     y = gdf[TARGET_COLUMN].copy()
@@ -203,7 +208,10 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
         n_jobs=-1,
         verbose=-1,
     )
-    model.fit(X_train, y_train)
+    
+    # 🌟 確保模型知道行政區是類別特徵
+    cat_features = ['town'] if 'town' in X.columns else None
+    model.fit(X_train, y_train, categorical_feature=cat_features)
     
     pred = model.predict(X_test)
     metrics = _metrics(y_test, pred)
@@ -236,6 +244,8 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
         "shap_importance": shap_importance.reset_index(drop=True),
         "trained_rows": len(X),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        # 🌟 核心修正：儲存訓練時的行政區清單
+        "town_categories": list(X['town'].cat.categories) if 'town' in X.columns else []
     }
     joblib.dump(bundle, artifact_path)
     print("✅ 模型訓練完成並儲存成功！")
@@ -259,19 +269,47 @@ def predict_rent_per_ping(
     x: float,
     y: float,
 ) -> dict[str, Any]:
+    
+    # 1. 空間定位：自動尋找正確欄位名稱
+    town_gdf = _get_town_gdf()
+    point = Point(x, y)
+    match = town_gdf[town_gdf.contains(point)]
+    
+    town_name = "西屯區"
+    if not match.empty:
+        possible_cols = ['town', 'TOWNNAME', 'TOWN', 'TOWN_NAME', 'townname', '鄉鎮市區', '鄉鎮名稱', 'NAME', 'name']
+        for col in possible_cols:
+            if col in match.columns:
+                town_name = match.iloc[0][col]
+                break
+    
+    # 2. 組合特徵
     row_dict = {}
-    row_dict.update({key: float(value) for key, value in user_inputs.items()})
+    row_dict.update({key: float(value) for key, value in user_inputs.items() if key != 'town' and key != 'transaction_year'})
     row_dict.update({key: float(value) for key, value in location_features.items()})
+    
+    row_dict['town'] = town_name
+    row_dict['transaction_year'] = float(datetime.datetime.now().year)
     
     for col in FEATURE_COLUMNS:
         if col not in row_dict:
             row_dict[col] = 0.0
             
     model_row = pd.DataFrame([row_dict])[FEATURE_COLUMNS]
+    
+    # 🌟 核心修正：強制使用訓練時的類別清單對齊
+    if 'town' in model_row.columns:
+        train_cats = bundle.get("town_categories", [])
+        if train_cats:
+            model_row['town'] = pd.Categorical(model_row['town'], categories=train_cats)
+        else:
+            model_row['town'] = model_row['town'].astype('category')
+            
     ln_pred = float(bundle["model"].predict(model_row)[0])
     
     return {
         "ln_u_price": ln_pred,
         "price_per_ping": float(np.exp(ln_pred)), 
         "raw_features": row_dict,
+        "detected_town": town_name,
     }
