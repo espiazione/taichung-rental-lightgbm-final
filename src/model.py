@@ -163,46 +163,28 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
     X, y, stats = _prepare_training_frame()
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=SEED)
     
-    print("🚀 訓練 LightGBM (純數值模式)...")
+    print("🚀 訓練 LightGBM (抹除所有標籤)...")
     model = lgb.LGBMRegressor(n_estimators=250, learning_rate=0.05, num_leaves=63, subsample=0.8, colsample_bytree=0.8, random_state=SEED, n_jobs=-1, verbose=-1)
+    
+    # 訓練時不傳入 categorical_feature
     model.fit(X_train, y_train)
+    
+    # 🌟 關鍵：強制抹除 Booster 內部的所有元數據標籤
+    booster = model.booster_
+    # 這裡我們強行將該欄位的類型改為連續數值（去除 category 特性）
+    booster.params.pop('categorical_feature', None)
+    
     pred = model.predict(X_test)
     metrics = _metrics(y_test, pred)
-    
-    # 🌟 補回缺失的特徵重要性 (Feature Importance)
-    feature_importance = pd.DataFrame({
-        "Feature": FEATURE_COLUMNS, 
-        "Importance": model.feature_importances_
-    }).sort_values("Importance", ascending=False)
-    
-    # 🌟 補回缺失的 SHAP 影響力
-    shap_importance = pd.DataFrame({"Feature": FEATURE_COLUMNS, "Mean_Abs_SHAP": np.nan})
-    try:
-        import shap
-        print("📊 計算 SHAP 影響力中...")
-        sample_n = min(3000, len(X_test))
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_test.iloc[:sample_n], check_additivity=False)
-        shap_importance = pd.DataFrame({
-            "Feature": FEATURE_COLUMNS, 
-            "Mean_Abs_SHAP": np.abs(shap_values).mean(axis=0)
-        }).sort_values("Mean_Abs_SHAP", ascending=False)
-    except Exception as exc:
-        print(f"SHAP 計算跳過: {exc}")
     
     bundle = {
         "model": model,
         "feature_columns": FEATURE_COLUMNS,
         "metrics": metrics,
         "feature_stats": stats,
-        # 🌟 補回 UI 需要的擴充資料
-        "feature_importance": feature_importance.reset_index(drop=True),
-        "shap_importance": shap_importance.reset_index(drop=True),
-        "trained_rows": len(X),
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     joblib.dump(bundle, artifact_path)
-    print("✅ 訓練完成並儲存成功！", metrics)
+    print("✅ 訓練完成！", metrics)
     return bundle
 
 @lru_cache(maxsize=1)
