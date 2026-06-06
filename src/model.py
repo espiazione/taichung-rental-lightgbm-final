@@ -216,6 +216,8 @@ def feature_description_table() -> pd.DataFrame:
 def predict_rent_per_ping(
     bundle: dict[str, Any], user_inputs: dict[str, float], location_features: dict[str, float], x: float, y: float
 ) -> dict[str, Any]:
+    
+    # 1. 空間定位
     town_gdf = _get_town_gdf()
     point = Point(x, y)
     match = town_gdf[town_gdf.contains(point)]
@@ -226,18 +228,29 @@ def predict_rent_per_ping(
                 town_name = match.iloc[0][col]
                 break
                 
+    # 2. 準備輸入特徵 (確保全部為 float)
     row_dict = {}
     row_dict.update({key: float(value) for key, value in user_inputs.items() if key != 'town' and key != 'transaction_year'})
     row_dict.update({key: float(value) for key, value in location_features.items()})
     
+    # 強制使用整數映射
     row_dict['town'] = float(TOWN_MAPPING.get(town_name, 0))
     row_dict['transaction_year'] = float(datetime.datetime.now().year)
     
+    # 補足所有 FEATURE_COLUMNS
     for col in FEATURE_COLUMNS:
         if col not in row_dict: row_dict[col] = 0.0
             
-    model_row = pd.DataFrame([row_dict])[FEATURE_COLUMNS]
-    X_pred = model_row.astype(float).values
-    ln_pred = float(bundle["model"].predict(X_pred)[0])
+    # 3. 🌟 終極脫殼：轉成純 NumPy Array，完全不帶任何 Pandas 標籤或 Category 屬性
+    # 這是 LightGBM 預測時最穩定的格式
+    input_data = np.array([[row_dict[col] for col in FEATURE_COLUMNS]], dtype=np.float32)
     
-    return {"ln_u_price": ln_pred, "price_per_ping": float(np.exp(ln_pred)), "raw_features": row_dict, "detected_town": town_name}
+    # 使用 Booster 預測，徹底繞過 sklearn 封裝可能帶來的驗證問題
+    ln_pred = float(bundle["model"].booster_.predict(input_data)[0])
+    
+    return {
+        "ln_u_price": ln_pred, 
+        "price_per_ping": float(np.exp(ln_pred)), 
+        "raw_features": row_dict, 
+        "detected_town": town_name
+    }
