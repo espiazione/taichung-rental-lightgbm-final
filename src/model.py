@@ -161,8 +161,12 @@ def _prepare_training_frame() -> tuple[pd.DataFrame, pd.Series, dict[str, dict[s
     return X, y, stats
 
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    return {"R2": round(float(r2_score(y_true, y_pred)), 4), "RMSE": round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 4)}
-
+    return {
+        "R2": round(float(r2_score(y_true, y_pred)), 4),
+        "RMSE": round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 4),
+        "MAE": round(float(mean_absolute_error(y_true, y_pred)), 4),
+        "MAPE_pct": round(float(np.mean(np.abs((y_true - y_pred) / y_true)) * 100), 2),
+    }
 def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     X, y, stats = _prepare_training_frame()
