@@ -329,38 +329,40 @@ def _home_html(bundle: dict) -> str:
     )
 
 @solara.component
-def HomePage(bundle: dict):
-    solara.HTML(tag="div", unsafe_innerHTML=_home_html(bundle))
-
-@solara.component
-def MapPanel():
-    with solara.Column(classes=["map-shell"], style={"width": "100%"}):
-        map_widget = solara.use_memo(lambda: create_leafmap_widget(target_lat, target_lon), [])
-        solara.display(map_widget)
-        solara.HTML(
-            tag="div",
-            unsafe_innerHTML=(
-                "<div class='map-badge'><div class='panel-kicker'>INTERACTIVE MAP</div>"
-                "<div class='map-badge-title'>實價登錄點位與目標位置</div>"
-                f"<span class='map-badge-copy'>目前目標座標：{target_lon.value:.6f}, {target_lat.value:.6f}</span></div>"
-            ),
-        )
-
-@solara.component
 def ControlPanel(bundle: dict, spatial_cache: dict):
     # 🌟 建立人性直觀的響應式狀態變數
     house_age = solara.use_reactive(10.0)
-    current_floor = solara.use_reactive(5.0)  # 使用者直觀輸入：目前在幾樓
-    total_floor = solara.use_reactive(12.0)   # 使用者直觀輸入：總樓層有幾樓
-    area_ping = solara.use_reactive(30.0)     # 使用者直觀輸入：幾坪的房子
+    current_floor = solara.use_reactive(5.0)
+    total_floor = solara.use_reactive(12.0)
+    area_ping = solara.use_reactive(30.0)
     
-    # 1. 建物型態選單 (拿掉行政區選單)
+    # 建物型態下拉選單
+    b_type_display = solara.use_reactive("電梯大樓")
+    # 是否為頂樓、車位
+    is_top_floor = solara.use_reactive(False)
+    has_parking = solara.use_reactive(True)
+
+    prediction = solara.use_reactive(None)
+    error = solara.use_reactive("")
+
+    with solara.Column(classes=["control-shell"], style={"width": "100%"}):
+        solara.HTML(
+            tag="div",
+            unsafe_innerHTML=(
+                "<div class='control-hero'><div class='panel-kicker'>MAP PREDICTION</div>"
+                "<h2 class='control-hero-title'>設定目標房屋並估算單價</h2>"
+                "<p class='panel-copy'>在左側地圖點選目標位置，系統將即時計算該座標周邊的社宅、綠地與軌道等空間特徵。填寫下方屬性後即可估算。</p>"
+                f"<span class='coordinate-pill' style='margin-top:10px'>目標座標：{target_lon.value:.6f}, {target_lat.value:.6f}</span></div>"
+            ),
+        )
+
+        # 1. 建物型態選單
         with solara.Column(classes=["control-section"]):
             solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>基本地理與建物屬性</div>")
             solara.Select("選擇建物型態", values=["電梯大樓", "透天厝", "公寓(5樓含以下無電梯)"], value=b_type_display)
             solara.HTML(tag="div", unsafe_innerHTML="<span class='coordinate-pill' style='margin-top:4px'>📍 行政區將由地圖標記自動精準判定</span>")
 
-        # 2. 直觀數值拉桿 (維持不變)
+        # 2. 直觀數值拉桿
         with solara.Column(classes=["control-section"]):
             solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋內部規格屬性</div>")
             solara.SliderFloat("房屋屋齡 (年)", value=house_age, min=0.0, max=60.0, step=1.0)
@@ -368,7 +370,7 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
             solara.SliderFloat("該建物總樓層數 (樓)", value=total_floor, min=1.0, max=50.0, step=1.0)
             solara.SliderFloat("房屋建物面積 (坪數)", value=area_ping, min=2.0, max=150.0, step=0.5)
 
-        # 3. 虛擬變數勾選 (維持不變)
+        # 3. 虛擬變數勾選
         with solara.Column(classes=["control-section"]):
             solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>其他附加條件</div>")
             with solara.Row():
@@ -380,10 +382,10 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
                 # 呼叫地理計算大腦
                 location = compute_location_features(target_lon.value, target_lat.value, spatial_cache)
                 
-                # 🌟 從空間魔法中取得自動判定的行政區
+                # 從空間魔法中取得自動判定的行政區
                 auto_town = location.get("auto_town", "其他區")
                 
-                # 幕後黑魔法 (維持不變)
+                # 幕後黑魔法：轉換為模型變數
                 computed_floor_ratio = float(current_floor.value / total_floor.value) if total_floor.value > 0 else 0.5
                 computed_floor_ratio = min(max(computed_floor_ratio, 0.0), 1.0)
                 computed_ln_B_area = float(np.log(area_ping.value)) if area_ping.value > 0 else 0.0
@@ -393,7 +395,7 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
                 
                 # 組裝給 LightGBM 的特徵字典
                 user_inputs = {
-                    "town": auto_town,  # 🎯 這裡直接帶入自動判定的結果，免除使用者輸入的衝突！
+                    "town": auto_town,
                     "house_age": float(house_age.value),
                     "floor_ratio": computed_floor_ratio,
                     "ln_B_area": computed_ln_B_area,
