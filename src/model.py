@@ -153,6 +153,10 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
     }
     
     joblib.dump(bundle, artifact_path, compress=3)
+    
+    # 🌟 關鍵修復：把剛訓練好的模型掛載回去，讓預測按鈕能找到大腦！
+    bundle["model"] = lgb.Booster(model_file=str(ARTIFACT_DIR / "model.txt"))
+    
     print(f"✅ 訓練完成，資料筆數: {len(X)}，R2: {metrics['R2']}!")
     return bundle
 

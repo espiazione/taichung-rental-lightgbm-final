@@ -195,4 +195,19 @@ def compute_location_features(lon: float, lat: float, cache: dict[str, Any] | No
             elif "精密" in row_str or "精科" in row_str: features["in_南屯區精密機械科技創新園區社會住宅_net_2000"] = 1.0
             elif "恊園" in row_str or "協園" in row_str: features["in_東區恊園_net_2000"] = 1.0
 
-    return {"features": features, "details": details}
+    # 4. 🌟 自動感測游標所在的行政區 (取代下拉選單)
+    town_name = "其他區"
+    towns_gdf = cache["towns"]
+    
+    # 找出包含該座標點的多邊形
+    containing = towns_gdf[towns_gdf.geometry.contains(point)]
+    if not containing.empty:
+        row = containing.iloc[0]
+        # 自動適應各種可能的欄位命名
+        col = next((c for c in ['TOWNNAME', 'TOWN', 'town', 'township'] if c in row.keys()), None)
+        if col and row[col] in CORE_TOWNS:
+            town_name = row[col]
+            
+    details["自動判定行政區"] = town_name
+
+    return {"features": features, "details": details, "auto_town": town_name}
