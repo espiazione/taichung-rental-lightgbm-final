@@ -122,17 +122,38 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
     
     pred = model.predict(X_test)
     metrics = _metrics(y_test, pred)
+
+    print("📊 正在計算特徵重要性與 SHAP 貢獻度...")
+    # --- 新增：計算特徵重要性 ---
+    fi_df = pd.DataFrame({
+        "Feature": trained_columns,
+        "Importance": model.feature_importances_
+    }).sort_values("Importance", ascending=False)
+
+    # --- 新增：計算 SHAP 貢獻度 ---
+    import shap
+    # 為了避免資料量太大算太久，我們抽取測試集前 5000 筆來計算 SHAP
+    sample_X = X_test[:5000] if len(X_test) > 5000 else X_test
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(sample_X)
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
     
-    # 2. 將 bundle 打包 (注意：這裡儲存的是「展開後」的完整欄位清單 trained_columns)
+    shap_df = pd.DataFrame({
+        "Feature": trained_columns,
+        "Mean_Abs_SHAP": mean_abs_shap
+    }).sort_values("Mean_Abs_SHAP", ascending=False)
+    
+    # 2. 將 bundle 打包 (加入 fi_df 與 shap_df)
     bundle = {
-        "feature_columns": trained_columns, # 這是包含 town_西屯區 的完整清單
+        "feature_columns": trained_columns,
         "metrics": metrics, 
-        "trained_rows": len(X)
+        "trained_rows": len(X),
+        "feature_importance": fi_df,
+        "shap_importance": shap_df
     }
     
     joblib.dump(bundle, artifact_path, compress=3)
-    print(f"✅ 訓練完成，資料筆數: {len(X)}！")
-    print(f"📊 模型指標 ➔ R2: {metrics['R2']} | RMSE: {metrics['RMSE']} | MAE: {metrics['MAE']} | MAPE: {metrics['MAPE_pct']}%")
+    print(f"✅ 訓練完成，資料筆數: {len(X)}，R2: {metrics['R2']}!")
     return bundle
 
 @lru_cache(maxsize=1)

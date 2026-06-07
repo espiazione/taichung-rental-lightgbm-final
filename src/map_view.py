@@ -6,11 +6,12 @@ from functools import lru_cache
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 
 from .config import DATA_PATH, EPSG_WEB
 
+# 臺中市中心座標
 MAP_CENTER = (24.1477, 120.6736)
-
 
 def _red_color(value: float, vmin: float, vmax: float) -> str:
     palette = ["#fee5d9", "#fcbba1", "#fc9272", "#fb6a4a", "#de2d26", "#a50f15"]
@@ -19,7 +20,6 @@ def _red_color(value: float, vmin: float, vmax: float) -> str:
     frac = min(max((value - vmin) / (vmax - vmin), 0.0), 1.0)
     return palette[min(int(frac * len(palette)), len(palette) - 1)]
 
-
 @lru_cache(maxsize=1)
 def load_map_gdf() -> gpd.GeoDataFrame:
     gdf = gpd.read_file(DATA_PATH)
@@ -27,14 +27,22 @@ def load_map_gdf() -> gpd.GeoDataFrame:
     if gdf.crs is None:
         gdf = gdf.set_crs(3826)
     gdf = gdf.to_crs(EPSG_WEB)
+    
+    # 🌟 轉換與確保房價特徵存在
+    if 'u_price' in gdf.columns:
+        # 將 元/平方公尺 轉換為 萬/坪，方便在地圖點擊時顯示給使用者看
+        gdf['price_ping_10k'] = (pd.to_numeric(gdf['u_price'], errors='coerce') * 3.3058) / 10000.0
+        # 若資料沒有預先算好的 ln_u_price，這邊幫忙補齊
+        if 'ln_u_price' not in gdf.columns:
+            gdf['ln_u_price'] = np.log((pd.to_numeric(gdf['u_price'], errors='coerce') * 3.3058).clip(lower=1e-5)).fillna(0)
+
+    # 替換為你的房價專屬欄位
     cols = [
-        "rent_ping",
-        "ln_rent",
-        "area_pings",
-        "pet_friendly",
-        "apartment",
-        "elevator_building",
-        "core_zone",
+        "price_ping_10k",
+        "ln_u_price",
+        "house_age",
+        "ln_B_area",
+        "is_top_floor",
         "geometry",
     ]
     gdf = gdf[[col for col in cols if col in gdf.columns]].copy()
@@ -44,16 +52,15 @@ def load_map_gdf() -> gpd.GeoDataFrame:
         gdf = gdf.sample(max_points, random_state=42).copy()
     return gdf
 
-
 @lru_cache(maxsize=1)
 def map_geojson() -> tuple[dict, float, float]:
     gdf = load_map_gdf()
-    vmin = float(gdf["ln_rent"].quantile(0.02))
-    vmax = float(gdf["ln_rent"].quantile(0.98))
+    # 🌟 將著色基準改為 ln_u_price
+    vmin = float(gdf["ln_u_price"].quantile(0.02))
+    vmax = float(gdf["ln_u_price"].quantile(0.98))
     gdf = gdf.copy()
-    gdf["_color"] = gdf["ln_rent"].apply(lambda value: _red_color(float(value), vmin, vmax))
+    gdf["_color"] = gdf["ln_u_price"].apply(lambda value: _red_color(float(value), vmin, vmax))
     return json.loads(gdf.to_json(drop_id=True)), vmin, vmax
-
 
 def _format_value(value) -> str:
     if value is None:
@@ -64,19 +71,17 @@ def _format_value(value) -> str:
     except TypeError:
         pass
     if isinstance(value, float):
-        return f"{value:,.3f}"
+        return f"{value:,.2f}"
     return str(value)
 
-
 def _popup_html(properties: dict) -> str:
+    # 🌟 換上你的房價專屬彈跳視窗標籤
     labels = {
-        "rent_ping": "每坪租金",
-        "ln_rent": "ln_rent",
-        "area_pings": "坪數",
-        "pet_friendly": "可養寵物",
-        "apartment": "公寓",
-        "elevator_building": "電梯大樓",
-        "core_zone": "核心區",
+        "price_ping_10k": "實際單價 (萬/坪)",
+        "ln_u_price": "對數單價 (ln)",
+        "house_age": "屋齡 (年)",
+        "ln_B_area": "面積特徵 (ln)",
+        "is_top_floor": "是否為頂樓",
     }
     rows = []
     for key, label in labels.items():
@@ -86,7 +91,6 @@ def _popup_html(properties: dict) -> str:
                 f"<td style='text-align:right;padding:2px 0'>{_format_value(properties[key])}</td></tr>"
             )
     return "<table style='font-size:12px'>" + "".join(rows) + "</table>"
-
 
 def create_leafmap_widget(lat_state, lon_state):
     import leafmap
@@ -117,14 +121,14 @@ def create_leafmap_widget(lat_state, lon_state):
 
     houses_layer = GeoJSON(
         data=data,
-        name="Taichung rental houses: ln_rent",
+        name="Taichung housing: ln_u_price",
         style_callback=style_callback,
         point_style={"radius": 4, "fillOpacity": 0.72, "weight": 0.5},
         hover_style={"fillOpacity": 1.0, "weight": 1.5},
     )
     m.add_layer(houses_layer)
 
-    marker = Marker(location=(lat_state.value, lon_state.value), draggable=True, title="Target house")
+    marker = Marker(location=(lat_state.value, lon_state.value), draggable=True, title="Target location")
     m.add_layer(marker)
     popup = Popup(location=(lat_state.value, lon_state.value), close_button=True, auto_close=True, close_on_escape_key=True)
 
