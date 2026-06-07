@@ -3,7 +3,8 @@ from pathlib import Path
 
 # === 檔案路徑設定 ===
 APP_ROOT = Path(__file__).resolve().parents[1]
-# 這是你剛剛換上的新心臟！
+
+# 臺中房價主資料檔
 DATA_PATH = APP_ROOT / "Taichung_housing_FINAL.gpkg"
 POI_DIR = APP_ROOT / "POIs"
 ARTIFACT_DIR = APP_ROOT / "artifacts"
@@ -16,12 +17,17 @@ SEED = 42
 ML_N = 30_000
 KNN_K = 20
 
-# === 🌟 你的專屬目標變數 (這樣 model.py 就能自動抓取) ===
+# === 目標變數 ===
 TARGET_COLUMN = "ln_u_price"
 
-# === 🌟 你的專屬特徵分類 ===
+# === 特徵分類清單 ===
 # 1. 使用者可在網頁輸入的「數值變數」
-USER_CONTINUOUS = ["house_age", "floor_ratio", "ln_B_area"]
+USER_CONTINUOUS = [
+    "house_age", 
+    "floor_ratio", 
+    "ln_B_area", 
+    "transaction_year"  # 幫你補上交易年份
+]
 
 # 2. 使用者可在網頁勾選的「類別/虛擬變數」
 USER_BINARY = [
@@ -33,19 +39,30 @@ USER_BINARY = [
 
 # 3. 空間計算變數 (由 spatial.py 自動在地圖背後計算)
 SPATIAL_VARS = [
-    "log_dist_to_mrt_road", "log_dist_to_park_road", "log_dist_to_school_road",
-    "log_dist_to_interchange_road", "log_dist_to_ghost_road", "log_dist_to_bigstore_road",
-    "park_count_800m", "px_count_800m",
-    "in_梧棲區三民社會住宅_net_2000", "in_豐原安康一期_net_2000", 
-    "in_太平長億社會住宅_net_2000", "in_大里區光正一期社會住宅_net_2000",
-    "in_烏日區高鐵社會住宅_net_2000", "in_南屯區精密機械科技創新園區社會住宅_net_2000",
+    "log_dist_to_mrt_road", 
+    "log_dist_to_park_road", 
+    "log_dist_to_school_road",
+    "log_dist_to_interchange_road", 
+    "log_dist_to_ghost_road", 
+    "log_dist_to_bigstore_road",
+    "park_count_800m", 
+    "px_count_800m",
+    "in_梧棲區三民社會住宅_net_2000", 
+    "in_豐原安康一期_net_2000", 
+    "in_太平長億社會住宅_net_2000", 
+    "in_大里區光正一期社會住宅_net_2000",
+    "in_烏日區高鐵社會住宅_net_2000", 
+    "in_南屯區精密機械科技創新園區社會住宅_net_2000",
     "in_東區恊園_net_2000"
 ]
 
-# 將所有變數合併，這就是餵給 LightGBM 訓練的最終清單
+# 將所有變數合併，作為 LightGBM 訓練的最終清單
 FEATURE_COLUMNS = USER_CONTINUOUS + USER_BINARY + SPATIAL_VARS
 
-# === 你的專屬 POI 設定 (自動抓取圖層版) ===
+# 若後續有非 0/1 的字串類別特徵，可放在此處 (目前皆為數值或 Dummy，故留空)
+CATEGORICAL_FEATURES = []
+
+# === POI 圖層設定 ===
 POI_LAYERS = {
     "mrt": (POI_DIR / "Taichung_MRT.gpkg", "Taichung_MRT"),
     "park": (POI_DIR / "Taichung_parks.gpkg", "parks"),
@@ -61,7 +78,8 @@ POI_LAYERS = {
     "highway": (POI_DIR / "台中國道.gpkg", None),
 }
 
-# === 你的專屬道路距離對照表 ===
+# === 道路距離對照表 ===
+# 對應 spatial.py 計算距離時的 key 與特徵名稱
 ROAD_DISTANCE_FEATURES = {
     "mrt": "log_dist_to_mrt_road",
     "park": "log_dist_to_park_road",
@@ -71,14 +89,16 @@ ROAD_DISTANCE_FEATURES = {
     "bigstore": "log_dist_to_bigstore_road"
 }
 
+# 臺中核心區域 (供空間運算參考)
 CORE_TOWNS = {"東區", "西區", "南區", "北區", "中區", "西屯區", "北屯區", "南屯區"}
 
-# === 🌟 你的專屬特徵說明字典 ===
-# 這會在網頁首頁的表格中顯示給評審或使用者看
+# === 特徵說明字典 ===
+# 將顯示於 WebApp 首頁的特徵說明表格中
 FEATURE_DESCRIPTIONS = {
     "house_age": "房屋屋齡 (年)。",
     "floor_ratio": "所在樓層佔總樓層的比例，數值介於 0~1 之間。",
     "ln_B_area": "建物面積 (坪數) 取自然對數。",
+    "transaction_year": "交易年份。",
     "is_top_floor": "是否為頂樓，1=是，0=否。",
     "b_type_透天厝": "建物型態是否為透天厝，1=是，0=否。",
     "b_type_公寓(5樓含以下無電梯)": "建物型態是否為老舊公寓，1=是，0=否。",
