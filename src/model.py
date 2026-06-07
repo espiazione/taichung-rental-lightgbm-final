@@ -123,21 +123,17 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
     pred = model.predict(X_test)
     metrics = _metrics(y_test, pred)
 
+    # 確保這段邏輯在 model.py 的 train_and_save_model 裡面
     print("📊 正在計算特徵重要性與 SHAP 貢獻度...")
-    # --- 新增：計算特徵重要性 ---
     fi_df = pd.DataFrame({
         "Feature": trained_columns,
         "Importance": model.feature_importances_
     }).sort_values("Importance", ascending=False)
 
-    # --- 新增：計算 SHAP 貢獻度 ---
     import shap
-    # 為了避免資料量太大算太久，我們抽取測試集前 5000 筆來計算 SHAP
-    sample_X = X_test[:5000] if len(X_test) > 5000 else X_test
     explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(sample_X)
+    shap_values = explainer.shap_values(X_test[:1000]) # 取樣 1000 筆算 SHAP 比較快
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
-    
     shap_df = pd.DataFrame({
         "Feature": trained_columns,
         "Mean_Abs_SHAP": mean_abs_shap
