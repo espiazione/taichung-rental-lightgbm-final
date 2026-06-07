@@ -117,9 +117,16 @@ def PredictionPage(bundle: dict, spatial_cache: dict):
 
 @solara.component
 def Page():
+    # 確保 bundle 與 spatial_cache 只被呼叫一次
     bundle = solara.use_memo(load_or_train_bundle, [])
     spatial_cache = solara.use_memo(load_or_build_spatial_cache, [])
     
-    with solara.lab.Tabs(grow=True):
-        solara.lab.Tab("首頁", HomePage(bundle))
-        solara.lab.Tab("預測", PredictionPage(bundle, spatial_cache))
+    solara.Title("臺中市房價與社宅外部效應預測 WebApp")
+    solara.HTML(tag="style", unsafe_innerHTML=APP_CSS)
+    
+    # 使用正確的 Solara Tabs 語法，這會解決頁面空白問題
+    with solara.lab.Tabs(grow=True, color="#0f766e", slider_color="#b91c1c"):
+        with solara.lab.Tab("首頁說明"):
+            HomePage(bundle)
+        with solara.lab.Tab("互動地圖預測"):
+            PredictionPage(bundle, spatial_cache)
