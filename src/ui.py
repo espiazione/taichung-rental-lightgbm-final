@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import html
-
+import numpy as np
 import pandas as pd
 import solara
 import solara.lab
 
-# 增加匯入 CORE_TOWNS
-from .config import FEATURE_DESCRIPTIONS, USER_BINARY, USER_CONTINUOUS, CORE_TOWNS
+from .config import FEATURE_DESCRIPTIONS, CORE_TOWNS
 from .map_view import MAP_CENTER, create_leafmap_widget
 from .model import load_or_train_bundle, predict_rent_per_ping
 from .spatial import compute_location_features, load_or_build_spatial_cache
@@ -16,32 +15,7 @@ target_lat = solara.reactive(float(MAP_CENTER[0]))
 target_lon = solara.reactive(float(MAP_CENTER[1]))
 selected_tab = solara.reactive(0)
 
-# === 你的專屬類別變數標籤 ===
-BINARY_LABELS = {
-    "is_top_floor": "是否為頂樓",
-    "b_type_透天厝": "建物型態：透天厝",
-    "b_type_公寓(5樓含以下無電梯)": "建物型態：老式公寓",
-    "transaction sign_房地(土地+建物)+車位": "是否含車位"
-}
-
-# === 你的專屬連續變數標籤 (已修正，移除空間變數，補上年份) ===
-CONT_LABELS = {
-    "house_age": "屋齡 (年)",
-    "floor_ratio": "所在樓層比例 (0~1)",
-    "ln_B_area": "建物面積 (對數值)",
-    "transaction_year": "交易年份 (民國)"
-}
-
-# === 預設拉桿數值範圍防呆機制 ===
-SLIDER_DEFAULTS = {
-    "house_age": {"min": 0, "max": 100, "median": 15, "step": 1},
-    "floor_ratio": {"min": 0.0, "max": 1.0, "median": 0.5, "step": 0.01},
-    "ln_B_area": {"min": 1.0, "max": 8.0, "median": 3.5, "step": 0.1},
-    "transaction_year": {"min": 109, "max": 114, "median": 113, "step": 1}
-}
-
 APP_CSS = """
-/* CSS 保持與你原來完美一致，省略修改 */
 :root {
   --ds-ink: #16324f;
   --ds-ink-soft: #385169;
@@ -287,14 +261,7 @@ APP_CSS = """
 """
 
 def feature_description_table() -> pd.DataFrame:
-    # 解決原本模型中不存在此函式的問題，直接在這裡生成 DataFrame
-    return pd.DataFrame(
-        list(FEATURE_DESCRIPTIONS.items()),
-        columns=["特徵名稱", "說明"]
-    )
-
-def _yes_no(value: str) -> float:
-    return 1.0 if value == "是" else 0.0
+    return pd.DataFrame(list(FEATURE_DESCRIPTIONS.items()), columns=["特徵名稱", "說明"])
 
 def _display_table(df: pd.DataFrame, max_rows: int | None = None):
     table = df if max_rows is None else df.head(max_rows)
@@ -317,23 +284,18 @@ def _table_panel_html(title: str, df: pd.DataFrame, height: str, kicker: str = "
     body = f"<div class='app-table-wrap' style='height:{height}'>{table}</div>"
     return _panel_html(title, body, kicker=kicker, subtitle=subtitle)
 
-def _metrics_panel_html(metrics: dict, trained_rows: int, created_at: str) -> str:
+def _metrics_panel_html(metrics: dict, trained_rows: int) -> str:
     labels = [("R2", "R2"), ("RMSE", "RMSE"), ("MAE", "MAE"), ("MAPE_pct", "MAPE %")]
     tiles = "".join(
         f"<div class='metric-tile'><div class='metric-label'>{html.escape(label)}</div>"
         f"<div class='metric-value'>{html.escape(str(metrics.get(key, '-')))}</div></div>"
         for key, label in labels
     )
-    body = (
-        f"<div class='metric-grid'>{tiles}</div>"
-        f"<p class='panel-subtitle' style='margin-top:12px'>訓練樣本數：{trained_rows:,} 筆資料</p>"
-    )
+    body = f"<div class='metric-grid'>{tiles}</div><p class='panel-subtitle' style='margin-top:12px'>訓練樣本數：{trained_rows:,} 筆實價登錄資料</p>"
     return _panel_html("模型表現指標", body, kicker="MODEL PERFORMANCE")
 
 def _home_html(bundle: dict) -> str:
     feature_df = feature_description_table()
-    
-    # 防止因模型未產出 SHAP 圖表而導致前端崩潰
     fi = bundle.get("feature_importance", pd.DataFrame({"Feature": [], "Importance": []})).copy()
     if not fi.empty:
         fi["說明"] = fi["Feature"].map(FEATURE_DESCRIPTIONS).fillna("-")
@@ -347,20 +309,20 @@ def _home_html(bundle: dict) -> str:
         "<div class='panel-kicker'>TAICHUNG HOUSE PRICE PREDICTION</div>"
         "<h1 class='panel-title'>臺中市房價與社宅外部效應預測 WebApp</h1>"
         "<p class='panel-copy'>本系統整合實價登錄大數據與地理資訊，並結合 LightGBM 機器學習演算法與空間特徵工程。預測目標為 <code>ln_u_price</code>（單價對數），"
-        "系統會自動將輸出結果還原為每坪單價。您可以透過地圖點擊，即時評估社會住宅、交通節點與嫌惡設施等外部效應對房價的影響。</p>"
+        "系統會自動將輸出結果還原為每坪單價（萬/坪）。您可以透過地圖點擊，即時評估社會住宅、交通節點與嫌惡設施等外部效應對房價的影響。</p>"
         "</div></section>"
     )
     return (
         "<div class='codex-app-page'>"
         "<div class='home-grid'>"
         f"{intro}"
-        f"{_metrics_panel_html(bundle.get('metrics', {}), int(bundle.get('trained_rows', 0)), str(bundle.get('created_at', '尚未記錄')))}"
+        f"{_metrics_panel_html(bundle.get('metrics', {}), int(bundle.get('trained_rows', 0)))}"
         "</div>"
         "<div class='home-grid' style='margin-top:18px'>"
         f"{_table_panel_html('特徵變數說明', feature_df, '560px', kicker='FEATURE DICTIONARY', subtitle='模型使用的核心特徵與空間變數。')}"
         "<div class='home-stack'>"
-        f"{_table_panel_html('LightGBM 特徵重要性', fi, '264px', kicker='FEATURE IMPORTANCE', subtitle='依 LightGBM split/gain 重要性排序。')}"
-        f"{_table_panel_html('SHAP 平均絕對貢獻度', shap_df, '264px', kicker='MODEL INTERPRETATION', subtitle='計算各特徵對 ln_u_price 的平均絕對影響力。')}"
+        f"{_table_panel_html('LightGBM 特徵重要性', fi, '264px', kicker='FEATURE IMPORTANCE', subtitle='依 LightGBM 節點分裂次數重要性排序。')}"
+        f"{_table_panel_html('SHAP 平均絕對貢獻度', shap_df, '264px', kicker='MODEL INTERPRETATION', subtitle='計算各特徵對房屋單價的平均絕對影響力。')}"
         "</div>"
         "</div>"
         "</div>"
@@ -386,18 +348,19 @@ def MapPanel():
 
 @solara.component
 def ControlPanel(bundle: dict, spatial_cache: dict):
-    # 行政區選擇 (新增的功能)
+    # 🌟 建立人性直觀的響應式狀態變數
     town_state = solara.use_reactive("西屯區")
+    house_age = solara.use_reactive(10.0)
+    current_floor = solara.use_reactive(5.0)  # 使用者直觀輸入：目前在幾樓
+    total_floor = solara.use_reactive(12.0)   # 使用者直觀輸入：總樓層有幾樓
+    area_ping = solara.use_reactive(30.0)     # 使用者直觀輸入：幾坪的房子
     
-    continuous_state = {}
-    for key in USER_CONTINUOUS:
-        default_val = SLIDER_DEFAULTS.get(key, {}).get("median", 0)
-        continuous_state[key] = solara.use_reactive(default_val)  # noqa: SH103
-        
-    binary_state = {}
-    for key in USER_BINARY:
-        binary_state[key] = solara.use_reactive("否")  # noqa: SH103
-        
+    # 建物型態下拉選單
+    b_type_display = solara.use_reactive("電梯大樓")
+    # 是否為頂樓、車位
+    is_top_floor = solara.use_reactive(False)
+    has_parking = solara.use_reactive(True)
+
     prediction = solara.use_reactive(None)
     error = solara.use_reactive("")
 
@@ -412,42 +375,59 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
             ),
         )
 
+        # 1. 行政區與建物型態選單
         with solara.Column(classes=["control-section"]):
-            solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>選擇行政區</div>")
-            # 使用 config 中定義的核心行政區作為選單
-            solara.Select("行政區 (town)", values=list(CORE_TOWNS) + ["其他區"], value=town_state)
+            solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>基本地理與建物屬性</div>")
+            with solara.Row(gap="12px", style={"width": "100%"}):
+                with solara.Column(style={"flex": "1"}):
+                    solara.Select("選擇行政區", values=list(CORE_TOWNS) + ["其他區"], value=town_state)
+                with solara.Column(style={"flex": "1"}):
+                    solara.Select("選擇建物型態", values=["電梯大樓", "透天厝", "公寓(5樓含以下無電梯)"], value=b_type_display)
 
-        if continuous_state:
-            with solara.Column(classes=["control-section"]):
-                solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋物件數值屬性</div>")
-                for key, state in continuous_state.items():
-                    item = SLIDER_DEFAULTS.get(key, {"min": 0, "max": 100, "step": 1})
-                    solara.SliderFloat(
-                        CONT_LABELS.get(key, key), 
-                        value=state,
-                        min=float(item["min"]),
-                        max=float(item["max"]),
-                        step=float(item.get("step", 1.0)),
-                    )
+        # 2. 直觀數值拉桿 (坪數、樓層、屋齡)
+        with solara.Column(classes=["control-section"]):
+            solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋內部規格屬性</div>")
+            
+            solara.SliderFloat("房屋屋齡 (年)", value=house_age, min=0.0, max=60.0, step=1.0)
+            solara.SliderFloat("欲預測的目標樓層 (樓)", value=current_floor, min=1.0, max=50.0, step=1.0)
+            solara.SliderFloat("該建物總樓層數 (樓)", value=total_floor, min=1.0, max=50.0, step=1.0)
+            solara.SliderFloat("房屋建物面積 (坪數)", value=area_ping, min=2.0, max=150.0, step=0.5)
 
-        if binary_state:
-            with solara.Column(classes=["control-section"]):
-                solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>房屋物件類別屬性</div>")
-                binary_items = list(binary_state.items())
-                for i in range(0, len(binary_items), 2):
-                    with solara.Row(gap="12px", style={"width": "100%", "align-items": "end"}):
-                        for key, state in binary_items[i : i + 2]:
-                            with solara.Column(style={"flex": "1 1 0", "min-width": "0"}):
-                                solara.Select(BINARY_LABELS.get(key, key), values=["否", "是"], value=state)
+        # 3. 虛擬變數勾選
+        with solara.Column(classes=["control-section"]):
+            solara.HTML(tag="div", unsafe_innerHTML="<div class='section-label'>其他附加條件</div>")
+            with solara.Row():
+                solara.Checkbox(label="此物件是否為該棟頂樓", value=is_top_floor)
+                solara.Checkbox(label="交易內容是否包含車位", value=has_parking)
 
         def run_prediction():
             try:
+                # 呼叫地理計算大腦
                 location = compute_location_features(target_lon.value, target_lat.value, spatial_cache)
                 
-                # 整併所有輸入值 (加入新增的 town)
-                user_inputs = {"town": town_state.value}
-                user_inputs.update({key: float(state.value) for key, state in continuous_state.items()})
-                user_inputs.update({key: _yes_no(state.value) for key, state in binary_state.items()})
+                # 🌟 幕後黑魔法：在背景將直觀數字轉換為模型需要的對數值與比例
+                # A. 樓層比例 = 目標樓層 / 總樓層 (限制在 0~1 之間)
+                computed_floor_ratio = float(current_floor.value / total_floor.value) if total_floor.value > 0 else 0.5
+                computed_floor_ratio = min(max(computed_floor_ratio, 0.0), 1.0)
+                
+                # B. 坪數轉自然對數 (ln)
+                computed_ln_B_area = float(np.log(area_ping.value)) if area_ping.value > 0 else 0.0
+                
+                # C. 下拉選單轉 Dummy 0 與 1
+                is_tou_tian = 1.0 if b_type_display.value == "透天厝" else 0.0
+                is_gong_yu = 1.0 if b_type_display.value == "公寓(5樓含以下無電梯)" else 0.0
+                
+                # 組裝給 LightGBM 的特徵字典
+                user_inputs = {
+                    "town": town_state.value,
+                    "house_age": float(house_age.value),
+                    "floor_ratio": computed_floor_ratio,
+                    "ln_B_area": computed_ln_B_area,
+                    "is_top_floor": 1.0 if is_top_floor.value else 0.0,
+                    "b_type_透天厝": is_tou_tian,
+                    "b_type_公寓(5樓含以下無電梯)": is_gong_yu,
+                    "transaction sign_房地(土地+建物)+車位": 1.0 if has_parking.value else 0.0
+                }
                 
                 result = predict_rent_per_ping(
                     bundle,
@@ -462,7 +442,7 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
                 prediction.value = None
                 error.value = f"運算錯誤: {str(exc)}"
 
-        solara.Button("計算預測單價", on_click=run_prediction, color="primary", outlined=False)
+        solara.Button("計算預測房屋單價", on_click=run_prediction, color="primary", outlined=False)
 
         if error.value:
             solara.Error(error.value)
@@ -471,23 +451,20 @@ def ControlPanel(bundle: dict, spatial_cache: dict):
             pred = prediction.value["prediction"]
             loc = prediction.value["location"]
             
-            # 取得「元/坪」的預測結果，並除以 10000 轉換為「萬/坪」
             raw_price_per_ping = pred.get("price_per_ping", 0)
             val_display_ten_k = raw_price_per_ping / 10000.0
-            
             ln_display = pred.get("ln_u_price", 0)
             
             solara.HTML(
                 tag="div",
                 unsafe_innerHTML=(
                     "<div class='result-card'><div class='panel-kicker'>PREDICTED PRICE</div>"
-                    # 畫面顯示為 萬 / 坪
                     f"<div class='result-value'>{val_display_ten_k:,.1f} 萬 / 坪</div>"
-                    f"<p class='panel-subtitle'>模型輸出 ln_u_price = {ln_display:.4f}</p></div>"
+                    f"<p class='panel-subtitle'>模型輸出單價對數值 ln_u_price = {ln_display:.4f}</p></div>"
                 ),
             )
             loc_df = pd.DataFrame([loc["details"]]).T.reset_index()
-            loc_df.columns = ["區位計算項目", "值"]
+            loc_df.columns = ["區位計算項目", "實測值"]
             _display_table(loc_df)
 
 @solara.component
@@ -507,8 +484,8 @@ def Page():
     spatial_cache = solara.use_memo(load_or_build_spatial_cache, [])
         
     with solara.lab.Tabs(value=selected_tab, grow=True, color="#0f766e", slider_color="#b91c1c"):
-        solara.lab.Tab("首頁")
-        solara.lab.Tab("地圖預測")
+        solara.lab.Tab("首頁說明")
+        solara.lab.Tab("互動地圖預測")
         
     if selected_tab.value == 0:
         HomePage(bundle)
