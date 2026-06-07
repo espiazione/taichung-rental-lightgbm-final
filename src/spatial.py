@@ -128,7 +128,14 @@ def _hydrate_cache(cache: dict[str, Any]) -> dict[str, Any]:
 @lru_cache(maxsize=1)
 def load_or_build_spatial_cache() -> dict[str, Any]:
     if SPATIAL_CACHE_PATH.exists():
-        return _hydrate_cache(joblib.load(SPATIAL_CACHE_PATH))
+        try:
+            return _hydrate_cache(joblib.load(SPATIAL_CACHE_PATH))
+        except Exception as e:
+            print(f"⚠️ 讀取空間快取失敗 (可能是 Pandas 版本衝突): {e}")
+            print("🔄 系統將自動在背景重新建立相容的空間快取...")
+            # 發生錯誤就略過，直接執行下方的重建邏輯
+            pass
+            
     return build_and_save_spatial_cache(SPATIAL_CACHE_PATH)
 
 def _count_within(tree: cKDTree, x: float, y: float, radius: float = 800.0) -> int:
