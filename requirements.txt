@@ -1,4 +1,4 @@
-solara==1.42.0
+solara>=1.57.4
 leafmap==0.39.0
 ipyleaflet==0.19.0
 geopandas==1.0.0
