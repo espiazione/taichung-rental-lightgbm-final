@@ -158,12 +158,16 @@ def train_and_save_model(artifact_path=MODEL_ARTIFACT_PATH) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_or_train_bundle() -> dict[str, Any]:
-    # 這裡的邏輯是你原本很棒的讀取法
     if MODEL_ARTIFACT_PATH.exists() and (ARTIFACT_DIR / "model.txt").exists():
-        bundle = joblib.load(MODEL_ARTIFACT_PATH)
-        # 用純文字檔將原生模型掛載回來
-        bundle["model"] = lgb.Booster(model_file=str(ARTIFACT_DIR / "model.txt"))
-        return bundle
+        try:
+            bundle = joblib.load(MODEL_ARTIFACT_PATH)
+            # 用純文字檔將原生模型掛載回來
+            bundle["model"] = lgb.Booster(model_file=str(ARTIFACT_DIR / "model.txt"))
+            return bundle
+        except Exception as e:
+            print(f"⚠️ 讀取模型包失敗 (可能是 Pandas 版本衝突): {e}")
+            print("🔄 系統將自動在雲端背景重新訓練模型 (約需幾分鐘)...")
+            pass # 發生錯誤就略過，直接往下執行重新訓練
     
     return train_and_save_model(MODEL_ARTIFACT_PATH)
 
